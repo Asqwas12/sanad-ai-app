@@ -4,6 +4,7 @@ import folium
 from streamlit_folium import st_folium
 import json
 import os
+from streamlit_js_eval import get_geolocation
 
 # ---------------------------------------------------------
 # 1. إعدادات الصفحة
@@ -103,12 +104,35 @@ if user_role == "📱 واجهة الطالب / الزائر":
             **يرجى التوجه فوراً وبشكل منتظم نحو أقرب مخرج طوارئ وتجنب استخدام المصاعد.**
         """)
         
-        # رابط صوت إنذار طوارئ مباشر وواضح
         sound_url = "https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3"
         
-        # مشغل الصوت التلقائي وتجاوز قيود المتصفح مع إتاحة مشغل مدمج
-        st.audio(sound_url, format="audio/mp3", autoplay=True)
-        st.caption("🔊 في حال لم يعمل الصوت تلقائياً بسبب إعدادات المتصفح لديك، اضغط زر التشغيل أعلى لسمع صافرة الإنذار.")
+        sound_repeater_html = f"""
+            <audio id="alarm-sound" src="{sound_url}" preload="auto"></audio>
+            <script>
+                var audio = document.getElementById("alarm-sound");
+                var playCount = 0;
+                
+                function playAudio() {{
+                    if (playCount < 3) {{
+                        audio.currentTime = 0;
+                        audio.play().catch(function(error) {{
+                            console.log("Autoplay failed:", error);
+                        }});
+                        playCount++;
+                    }}
+                }}
+
+                audio.onended = function() {{
+                    if (playCount < 3) {{
+                        playAudio();
+                    }}
+                }};
+
+                playAudio();
+            </script>
+        """
+        st.components.v1.html(sound_repeater_html, height=0)
+        st.audio(sound_url, format="audio/mp3")
 
     st.markdown("---")
 
@@ -143,12 +167,39 @@ if user_role == "📱 واجهة الطالب / الزائر":
 
     with col2:
         st.subheader("🗺️ مسار الإخلاء الموصى به بالذكاء الاصطناعي")
-        st.success("🤖 **AI Evacuation Guide:** أقرب مخرج آمن لك حالياً: **المخرج الشرقي (Exit East 2)** - نسبة الازدحام 10%.")
         
-        m_student = folium.Map(location=[24.7136, 46.6753], zoom_start=18)
-        folium.Marker([24.7136, 46.6753], popup="موقعك الحالي", icon=folium.Icon(color="blue", icon="user")).add_to(m_student)
-        folium.Marker([24.7140, 46.6758], popup="مخرج الطوارئ الآمن", icon=folium.Icon(color="green", icon="running")).add_to(m_student)
-        folium.PolyLine([[24.7136, 46.6753], [24.7140, 46.6758]], color="green", weight=4, opacity=0.8).add_to(m_student)
+        # 📍 جلب الموقع الجغرافي الحقيقي للجوال/الكمبيوتر
+        loc = get_geolocation()
+        
+        # موقع افتراضي أولياً (الرياض)
+        user_lat = 24.7136
+        user_lon = 46.6753
+        
+        if loc and "coords" in loc:
+            user_lat = loc["coords"]["latitude"]
+            user_lon = loc["coords"]["longitude"]
+            st.success("📍 تم تحديد موقعك الحقيقي بنجاح!")
+            
+            # تحديث موقع الطالب في الجدول لإظهاره على خريطة المشرفين
+            if 'selected_id' in locals():
+                st.session_state.users_data.loc[st.session_state.users_data["id"] == selected_id, "lat"] = user_lat
+                st.session_state.users_data.loc[st.session_state.users_data["id"] == selected_id, "lon"] = user_lon
+                save_students_data(st.session_state.users_data)
+        else:
+            st.caption("💡 اسمح للمتصفح بالوصول إلى الموقع الجغرافي لتحديد مكانك بدقة على الخريطة.")
+
+        st.success("🤖 **AI Evacuation Guide:** أقرب مخرج آمن لك حالياً بناءً على موقعك.")
+        
+        # رسم الخريطة على إحداثيات الطالب الحقيقية
+        m_student = folium.Map(location=[user_lat, user_lon], zoom_start=18)
+        folium.Marker([user_lat, user_lon], popup="موقعك الحالي الحقيقي", icon=folium.Icon(color="blue", icon="user")).add_to(m_student)
+        
+        # مخرج افتراضي بجوار الطالب
+        exit_lat = user_lat + 0.0004
+        exit_lon = user_lon + 0.0005
+        folium.Marker([exit_lat, exit_lon], popup="مخرج الطوارئ الآمن", icon=folium.Icon(color="green", icon="running")).add_to(m_student)
+        folium.PolyLine([[user_lat, user_lon], [exit_lat, exit_lon]], color="green", weight=4, opacity=0.8).add_to(m_student)
+        
         st_folium(m_student, width=500, height=300)
 
 # ---------------------------------------------------------
@@ -167,7 +218,6 @@ else:
         st.markdown(f"**المؤسسة:** {st.session_state.school_name} | **الموقع الجغرافي:** {st.session_state.school_location}")
         st.markdown("---")
 
-        # ⚙️ قسم إدارة النظام
         with st.expander("⚙️ إعدادات النظام: إدارة الطلاب وتعديل بيانات المدرسة"):
             col_sch, col_add, col_del = st.columns(3)
             
@@ -225,7 +275,6 @@ else:
 
         st.markdown("---")
 
-        # حساب الإحصائيات
         df = st.session_state.users_data
         total_users = len(df)
         safe_count = len(df[df["status"] == "Safe"])
